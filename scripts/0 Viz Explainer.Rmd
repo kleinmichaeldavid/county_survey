@@ -1,0 +1,394 @@
+---
+output:
+  pdf_document:
+    number_sections: false
+header-includes:
+- \usepackage{booktabs}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, show=FALSE, echo=FALSE)
+```
+
+```{r}
+
+depo <- NULL
+```
+
+```{r}
+
+library(tidyverse)
+library(ggplot2)
+## read data
+responses1 <- read.csv('survey_responses1.csv', encoding = "UTF-8"); names(responses1) <- gsub("X[0-9]*\\.\\.","", names(responses1))
+responses2 <- read.csv('survey_responses2.csv', encoding = "UTF-8"); names(responses2) <- gsub("X[0-9]*\\.\\.","", names(responses2))
+responses3 <- read.csv('survey_responses3.csv', encoding = "UTF-8"); names(responses3) <- gsub("X[0-9]*\\.\\.","", names(responses3))
+responses4 <- read.csv('survey_responses4.csv', encoding = "UTF-8"); names(responses4) <- gsub("X[0-9]*\\.\\.","", names(responses4))
+responses5 <- read.csv('survey_responses5.csv', encoding = "UTF-8"); names(responses5) <- gsub("X[0-9]*\\.\\.","", names(responses5))
+responses5 <- responses5[,-which(names(responses5) == "Comments..optional...107")] ## temp since 23 is duplicated
+
+## merge data and separate survey from demog
+all_responses <- rbind(responses1, responses2, responses3, responses4, responses5)
+codes <- read.table("codes.txt")$V1
+all_responses <- all_responses[all_responses[,2] %in% codes,]
+ids <- all_responses[,2]
+all_responses <- all_responses[,-c(1,2,grep("Comments", names(all_responses)))]
+survey_responses <- all_responses[,1:107]
+demog_responses <- all_responses[,108:112]
+
+## clean up question strings
+questions <- gsub("\\."," ",names(survey_responses)) %>% trimws()
+names(survey_responses) <- questions
+```
+
+```{r}
+## read the category types
+categories <- read.csv('question_categories.csv', sep = "\t")
+categories$question <- gsub("[^A-Za-z ]"," ",categories$question) %>% trimws() ### if prob here, its likely due to quote - replace with curvies
+categories <- categories[match(names(survey_responses), categories$question),] ## re-order to math survey df
+```
+
+```{r}
+better_cat_names <- data.frame(bad = c('meaning', 'ethics', 'safety', 'learning',
+                                        'teamwork', 'recognition', 'leadership',
+                                        'management', 'culture', 'conflict', 'commitment',
+                                        'pay', 'support', 'communication', 'balance'),
+                               good = c('Meaningful Work & Purpose',
+                                         'Conduct / Ethics',
+                                         'Health & Safety',
+                                         'Learning & Development',
+                                         'Teamwork', 'Recognition', 'Leadership (SMT)',
+                                         'Management Effectiveness',
+                                         'Culture', 'Conflict Resolution',
+                                         'Service Commitment',
+                                         'Pay & Benefits', 'Resources / Support',
+                                         'Communication', 'Work / Life Balance'))
+categories$category <- better_cat_names$good[match(categories$category, better_cat_names$bad)]
+
+
+
+## tidying demographic info
+demog_qs <- c("When.were.you.born.", "What.department.are.you.in.",
+              "How.long.have.you.been.an.employee.of.L.A.County.", "What.type.of.position.are.you.in.",
+              "What.is.your.employment.status.")
+demog_qs_df <- data.frame(names = demog_qs,
+                          questions = gsub("\\."," ",demog_qs) %>% trimws() %>% paste("?",sep=""),
+                          code = c("birth","department","duration","position","status"))
+names(demog_responses) <- demog_qs_df$code[match(names(demog_responses), demog_qs_df$names)]
+demog_responses$department[demog_responses$department == "Human Resources"] <- "Administration & Human Resources"
+
+## set up question number to category mapping
+categories$q_nums <- paste("q", 1:107, sep="_")
+names(survey_responses) <- paste("q", 1:107, sep="_")
+
+## transpose
+df_resps <- cbind(survey_responses, demog_responses) %>% as.matrix() %>% t() %>% as.data.frame()
+df_resps$category <- c(as.character(categories$category[match(categories$q_nums, row.names(df_resps))]),
+                       rep('demog', 5))
+
+
+long_data <- data.frame()
+for (n in 1:(ncol(df_resps)-1)) {
+  qs <- data.frame(emp = n, question = categories$question, category = df_resps[1:107,"category"], response = df_resps[1:107,n])
+  demogs <- df_resps[108:112,n] %>% as.character() %>% rep(107) %>% matrix(ncol = 5, byrow = TRUE) %>% as.data.frame()
+  names(demogs) <- c("birth", "department", "duration", "position", "status")
+  new_long <- cbind(qs, demogs)
+  long_data <- plyr::rbind.fill(long_data, new_long)
+}
+
+
+#################################################
+#### OVERALL SUMMARY VIZZES 
+############################################
+
+source('organization_functions.R')
+source('viz_functions.R')
+
+#### version with 1 row = 1 person
+
+df_tidy <- cbind(survey_responses, demog_responses)
+
+for (demog in c('birth', 'department', 'duration', 'position', 'status')){
+  df_tidy[,demog] <- as.character(df_tidy[,demog])
+  df_tidy[df_tidy[,demog] == "",demog] <- "<no response>"
+  df_tidy[,demog] <- as.factor(df_tidy[,demog])
+}
+
+if (!is.null(depo)) {
+  df_tidy <- df_tidy[df_tidy$department == depo,]
+}
+
+col_cats <- categories$category[match(names(df_tidy), categories$q_nums)]
+cats <- unique(categories$category)
+
+
+## summarize the tidy data into categories
+## sort the rows and columns
+df_cat_means_by_emp <- category_means_from_tidy(df_tidy, categories, 'department')
+df_cat_means_by_dep <- group_means_for_categories(df_cat_means_by_emp, 'group')
+categories_best_to_worst <- determine_column_order(df_cat_means_by_dep, 3:17, decreasing = TRUE)
+categories_worst_to_best <- determine_column_order(df_cat_means_by_dep, 3:17, decreasing = FALSE)
+departments_best_to_worst <- determine_row_order(df_cat_means_by_dep, 'group', 3:17, TRUE)
+departments_worst_to_best <- determine_row_order(df_cat_means_by_dep, 'group', 3:17, FALSE)
+df_cat_means_by_dep <- sort_columns(df_cat_means_by_dep, 3:17, categories_worst_to_best)
+df_cat_means_by_dep <- sort_rows(df_cat_means_by_dep, 'group', departments_best_to_worst)
+
+## get cat means for demogs other than department
+df_cat_means_by_pos <- group_means_for_categories(category_means_from_tidy(df_tidy,
+                                                                           categories,
+                                                                           'position'),'group')
+positions_best_to_worst <- determine_row_order(df_cat_means_by_pos, 'group', 3:17, TRUE)
+df_cat_means_by_pos <- sort_columns(df_cat_means_by_pos, 3:17, categories_worst_to_best)
+df_cat_means_by_pos <- sort_rows(df_cat_means_by_pos, 'group', positions_best_to_worst)
+
+df_cat_means_by_emp <- group_means_for_categories(category_means_from_tidy(df_tidy,
+                                                                           categories,
+                                                                           'status'), 'group')
+statuses_best_to_worst <- determine_row_order(df_cat_means_by_emp, 'group', 3:17, TRUE)
+df_cat_means_by_emp <- sort_columns(df_cat_means_by_emp, 3:17, categories_worst_to_best)
+df_cat_means_by_emp <- sort_rows(df_cat_means_by_emp, 'group', statuses_best_to_worst)
+
+
+df_cat_means_by_len <- group_means_for_categories(category_means_from_tidy(df_tidy,
+                                                                           categories,
+                                                                           'duration'), 'group')
+length_order <- c("<no response>", "30 or more years", "20 to 29 years",
+                  "10 to 19 years", "1 to 9 years", "less than 1 year")
+df_cat_means_by_len <- sort_columns(df_cat_means_by_len, 3:17, categories_worst_to_best)
+df_cat_means_by_len <- sort_rows(df_cat_means_by_len, 'group', rev(length_order))
+
+
+df_cat_means_by_gen <- group_means_for_categories(category_means_from_tidy(df_tidy,
+                                                                           categories,
+                                                                           'birth'), 'group')
+generation_order <- c("<no response>", "1946 to 1964", "1965 to 1976", "1977 to 1995", "1996 or later")
+df_cat_means_by_gen <- sort_columns(df_cat_means_by_gen, 3:17, categories_worst_to_best)
+df_cat_means_by_gen <- sort_rows(df_cat_means_by_gen, 'group', rev(generation_order))
+
+## get counts for histograms and stacked bars
+df_counts <- counts_from_tidy(df_tidy, proportions = FALSE)
+df_props <- counts_from_tidy(df_tidy, proportions = TRUE)
+df_count_cats <- question_counts_to_categories(df_counts, categories)
+df_count_cats <- sort_columns(df_count_cats, 2:16, categories_worst_to_best)
+category_scores <- colSums(df_count_cats[,2:16] * 1:5)
+
+
+######## RESPONDENT DEMOGRAPHICS
+
+# department
+department_resps <- demog_responses %>% group_by(department) %>%
+  summarize(n = n()) %>% as.data.frame()
+names(department_resps) <- c("Department", "Count")
+department_resps$Department <- as.character(department_resps$Department)
+department_resps$Department[department_resps$Department == ""] <- "/No Response Provided/"
+department_resps <- department_resps[order(department_resps$Count,
+                                           decreasing = TRUE),]
+row.names(department_resps) <- department_resps$Department
+department_resps$Department <- NULL
+
+# position
+position_resps <- demog_responses %>% group_by(position) %>%
+  summarize(n = n()) %>% as.data.frame()
+names(position_resps) <- c("Position", "Count")
+position_resps$Position <- as.character(position_resps$Position)
+position_resps$Position[position_resps$Position == ""] <- "/No Response Provided/"
+position_resps <- position_resps[order(position_resps$Count,
+                                           decreasing = TRUE),]
+row.names(position_resps) <- position_resps$Position
+position_resps$Position <- NULL
+
+# status
+status_resps <- demog_responses %>% group_by(status) %>%
+  summarize(n = n()) %>% as.data.frame()
+names(status_resps) <- c("Status", "Count")
+status_resps$Status <- as.character(status_resps$Status)
+status_resps$Status[status_resps$Status == ""] <- "/No Response Provided/"
+status_resps <- status_resps[order(status_resps$Count,
+                                           decreasing = TRUE),]
+row.names(status_resps) <- status_resps$Status
+status_resps$Status <- NULL
+
+# duration
+duration_resps <- demog_responses %>% group_by(duration) %>%
+  summarize(n = n()) %>% as.data.frame()
+names(duration_resps) <- c("Duration", "Count")
+duration_resps$Duration <- as.character(duration_resps$Duration)
+duration_resps$Duration[duration_resps$Duration == ""] <- "/No Response Provided/"
+duration_resps <- duration_resps[order(duration_resps$Count,
+                                           decreasing = TRUE),]
+row.names(duration_resps) <- duration_resps$Duration
+duration_resps$Duration <- NULL
+
+# birth
+birth_resps <- demog_responses %>% group_by(birth) %>%
+  summarize(n = n()) %>% as.data.frame()
+names(birth_resps) <- c("Birth", "Count")
+birth_resps$Birth <- as.character(birth_resps$Birth)
+birth_resps$Birth[birth_resps$Birth == ""] <- "/No Response Provided/"
+birth_resps <- birth_resps[order(birth_resps$Count,
+                                           decreasing = TRUE),]
+row.names(birth_resps) <- birth_resps$Birth
+birth_resps$Birth <- NULL
+
+
+```
+
+
+
+\centering  
+![](logo.png)  
+\Huge  
+Interpretation of the Visualizations  
+\LARGE  
+[Redacted] County Employee Engagement Survey  
+\Large  
+January 10th, 2019  
+\normalsize   
+\raggedright  
+\newpage
+
+\normalsize
+
+\raggedright
+
+In this document, an example each type of visualization that is used in this set of reports is presented with an explanation of how to read the visualization and how the data was computed.
+
+\centering  
+
+\large  
+
+**Agreement Scale**
+
+\normalsize
+
+\raggedright  
+
+**Example of an Agreement Scale:**
+
+```{r, fig.height = 1.3}
+## example agreement scale
+melted_cat_counts <- reshape2::melt(df_count_cats, id = 'response')
+output <- plot_strengths_and_weaknesses(melted_cat_counts, by_question = FALSE, type = "groups")
+```
+
+**Explanation of the Agreement Scale:**
+
+For each Group (e.g. a category, department, etc...), all of the  relevant responses are converted to numeric form using the following mapping:
+
+* strongly disagree = 1
+* disagree = 2
+* neutral = 3
+* agree = 4
+* strongly agree = 5
+
+An overall Agreement Score is assigned by computing the mean of all responses in the Group. The visualization displays the Agreement Score for each of the Groups (marked by an "x"), with the possible range of 1 to 5 evenly divided between classifications of "Clear Disagreement", "Slight Disagreement", "Neutral", "Slight Agreement", and "Clear Agreement".
+
+\newpage
+
+\centering  
+
+\large  
+
+**Response Profile Histogram**
+
+\normalsize
+
+\raggedright 
+
+**Example of the Response Profile Histogram:**
+
+```{r, fig.height = 1.9}
+
+title <- "no title"
+
+df_counts_all <- data.frame(response = 1:5,
+                            value = rowSums(df_counts[,2:ncol(df_counts)])/sum(rowSums(df_counts[,2:ncol(df_counts)])),
+                            variable = title)
+
+df_count_cats_error_bars <- data.frame(response = 1:5,
+                                       min = df_count_cats[2:ncol(df_count_cats)] %>%
+                                         as.matrix() %>% matrixStats::rowMins(),
+                                       max = df_count_cats[2:ncol(df_count_cats)] %>%
+                                         as.matrix() %>% matrixStats::rowMaxs())
+
+plot_histogram(1, df_counts_all, df_count_cats_error_bars, NULL, title)
+```
+
+**Explanation of the Response Profile Histogram:**
+
+There are three versions of the Response Profile Histogram:
+
+* horizontal, with range lines (shown above)
+* horizontal, without range lines
+* vertical, with range lines
+
+For some Group (e.g. a category), the proportion of all responses that were of each type (strongly agree, agree, neutral, etc) is computed and represented in the visualization as the length of the bars. If the Group contains Subgroups (e.g. each category is made up of a set of individual questions),  then a line is included to represent the range for the Subgroups. For example, in the example above, the "Strongly Agree" bar ends at about 0.3, meaning that about 30% of all respondents strongly agreed with the statements in this Group (e.g. a category). However, the "Strongly Agree" line ranges from about 0.15 to 0.5, indicating that the Subgroup (e.g. individual question) with the smallest proportion of "Strongly Agree" responses had about 15%, and the Subgroup with the highest proportion had about 50%.
+
+There is no difference between the horizontal and vertical versions of this visualization, except that they are flipped relative to one another.
+
+\newpage
+
+\newpage
+
+\centering  
+
+\large  
+
+**Response Profile Stacked Bar Chart**
+
+\normalsize
+
+\raggedright 
+
+**Example of the Response Profile Stacked Bar Chart:**
+
+```{r, fig.align='center', fig.height = 2}
+## potentially add overall as a top bar (in a new window thing?)
+reversed_resps <- df_count_cats
+reversed_resps$response <- 6 - reversed_resps$response
+example_data <- reversed_resps[,c(1,2,3,5,10,15)]
+names(example_data) <- c("response","Group E", "Group D", "Group C", "Group B", "Group A")
+plot_stacked_bars(example_data, ylab = "Proportion of employees giving each response")
+```
+
+**Explanation of the Response Profile Stacked Bar Chart:**
+
+The Response Profile Stacked Bar Chart is a variation of the Response Profile Histogram that can show several Groups at once for easy comparison between Groups. Rather than being displayed side-by-side, the bars for each response type (strongly agree, agree, neutral, etc) are stacked end to end, with each row representing a separate Group. In the example above, Group A has the highest level of agreement overall, with about 45% of respondents Strongly Agreeing, 30% Agreeing, 15% Neutral, 5% Disagreeing, and 5% Strongly Disagreeing. Group E has the lowest level of agreement, with only about 15% of respondents Strongly Agreeing, 30% Agreeing, 25% Neutral, 15% Disagreeing, and 15% Strongly Disagreeing.
+
+\newpage
+
+\centering  
+
+\large  
+
+**Agreement Heatmap**
+
+\normalsize
+
+\raggedright 
+
+**Example of the Agreement Heatmap:**
+
+```{r, fig.height = 3}
+example_heat <- df_cat_means_by_dep[,names(df_cat_means_by_dep) != "count"][c(1,3,5,6,8),
+                                                                            c(1,2,5,7,10,11,12,16)]
+names(example_heat) <- c("group", "Category G","Category F","Category E","Category D", "Category C","Category B","Category A")
+example_heat$group <- c("Group A","Group B","Group C","Group D","Group E")
+heatmap <- plot_heatmap(example_heat,
+                        "group", ylab = "Category")
+heatmap
+```
+
+**Explanation of the Agreement Heatmap:**
+
+The Agreement Heatmap is used to compare combinations of two variables that each have multiple categories. For each combination of Groups (e.g. the intersection of a department and category), all of the relevant responses were converted to numeric form using the following mapping:
+
+* strongly disagree = 1
+* disagree = 2
+* neutral = 3
+* agree = 4
+* strongly agree = 5
+
+An overall Agreement Score was assigned by computing the mean of the responses for each combination of Groups. These Agreement Scores are presented in the heatmap, with each cell coloured to represent the magnitude of the score. In the example above, Group E has the lowest agreement overall, especially in Categories E, F, and G. Group A has particularly high agreement, especially in Categories A, D, and F, and Group B has very high agreement in Category A.
+
+\newpage
